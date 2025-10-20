@@ -9,9 +9,9 @@ import torch
 
 from src.utils.utils import setup_seed, save_checkpoint, save_output
 from src.utils.config import load_cfg
-from src.dataset.mimic4_dataset import MIMIC4Dataset
-from src.dataset.utils import MIMIC4Collator
-from src.core.linear import Linear_Trainer
+from src.dataset.mimic4_dataset_MM import MIMIC4Dataset_EMB
+from src.dataset.utils import MIMIC4Collator_EMB
+from src.core.mm_linear import Linear_Trainer
 from src.utils.utils import processed_data_path, read_txt, load_pickle
 
 parser = argparse.ArgumentParser()
@@ -19,26 +19,24 @@ parser.add_argument('--cfg_path', type=str, default='configs/MM_mortality_90days
 parser.add_argument('--device', type=int, default=0, help='device id to use')
 parser.add_argument('--do_train', type=bool, default=True, help='True for training')
 parser.add_argument('--seed', type=int, default=2026, help='random seed')
+parser.add_argument('--fusion_method', type=str, default=None, help='fusion method for multimodal model', 
+                    choices=[None, 'Sum', 'WeightedFusion', 'AttnMaskedFusion', 'GraphFusion'])
 args = parser.parse_args()
-
 
 def main() : 
     config = load_cfg(args.cfg_path, args=args)
     print(config)
     setup_seed(config.seed)    
     os.environ["CUDA_VISIBLE_DEVICES"] = str(config.device)
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     
     if config.linear_output_dir.joinpath('best_epoch.pkl').exists() and config.do_train :
         print(f"Output already exists in {config.linear_output_dir}, skipping...")
         return
     
-    all_hosp_adm_dict = load_pickle(processed_data_path / f"mimic4/hosp_adm_dict_{config.target_days}days.pkl")
-        
-
-    train_set = MIMIC4Dataset(config, split='train', all_hosp_adm_dict=all_hosp_adm_dict)
-    valid_set = MIMIC4Dataset(config, split='val', all_hosp_adm_dict=all_hosp_adm_dict)
-    mimic4_collate_fn = MIMIC4Collator(config)
+    train_set = MIMIC4Dataset_EMB(config, split='train')
+    valid_set = MIMIC4Dataset_EMB(config, split='valid')
+    test_set = MIMIC4Dataset_EMB(config, split='test')    
+    mimic4_collate_fn = MIMIC4Collator_EMB()
 
     train_loader = DataLoader(
                     train_set,
@@ -63,7 +61,6 @@ def main() :
                     # prefetch_factor=2
                 )
     
-    test_set = MIMIC4Dataset(config, split='test', all_hosp_adm_dict=all_hosp_adm_dict)    
     test_loader = DataLoader(
                     test_set,
                     batch_size=config.batch_size,
@@ -77,10 +74,9 @@ def main() :
     
     # memory efficient
     
-    tokenizer = train_set.tokenizer
-    model = Linear_Trainer(config, tokenizer).to('cuda')
-    del all_hosp_adm_dict, mimic4_collate_fn, valid_set, train_set, test_set
-    # 
+    # tokenizer = train_set.tokenizer
+    model = Linear_Trainer(config).to('cuda')
+    del mimic4_collate_fn, valid_set, train_set, test_set
     
         
     
@@ -102,38 +98,42 @@ def main() :
             resume_epoch = 0
             print("Training from scratch...")
         
+        best_valid_auroc = 0.0
         for epoch in range(resume_epoch, config.linear_epochs) :
             epoch_outputs = {}
             score_outputs = {}
             train_loss = model.train_epoch(train_loader)
             valid_output = model.evaluate(valid_loader)
-            model_save_name = f"linear_epoch{epoch+1:03d}_train{train_loss:.4f}_valid{valid_output['loss']:.4f}"
-            save_checkpoint(config.linear_model_dir, model, model_save_name)
             
-            for mode, loader in zip(['train', 'valid', 'test'], [train_loader, valid_loader, test_loader]) : 
-                if mode == 'valid' : 
-                    output = valid_output
-                else : 
-                    output = model.evaluate(loader)
-                epoch_outputs[mode] = output
-                print(f"[Modality : {config.modality}] [Epoch {epoch} / {config.linear_epochs}] {mode} AUROC : {output['auroc']:.4f} | {mode} AUPRC : {output['auprc']:.4f}")
-                
-                score_outputs[mode] = {
-                    'accuracy' : output['accuracy'],
-                    'auroc' : output['auroc'],
-                    'auprc' : output['auprc'],
-                    'loss' : output['loss']
-                }
+            if valid_output['auroc'] > best_valid_auroc :
+                best_valid_auroc = valid_output['auroc']
+                model_save_name = f"linear_epoch{epoch+1:03d}_train{train_loss:.4f}_valid{valid_output['loss']:.4f}"
+                save_checkpoint(config.linear_model_dir, model, model_save_name)
+                for mode, loader in zip(['train', 'valid', 'test'], [train_loader, valid_loader, test_loader]) : 
+                    if mode == 'valid' : 
+                        output = valid_output
+                    else : 
+                        output = model.evaluate(loader)
+                    epoch_outputs[mode] = output
+                    print(f"[Modality : {config.modality}] [Epoch {epoch} / {config.linear_epochs}] {mode} AUROC : {output['auroc']:.4f} | {mode} AUPRC : {output['auprc']:.4f}")
+                    
+                    score_outputs[mode] = {
+                        'accuracy' : output['accuracy'],
+                        'auroc' : output['auroc'],
+                        'auprc' : output['auprc'],
+                        'loss' : output['loss']
+                    }
 
-            output_name = f"epoch{epoch+1:03d}"
-            save_output(config.linear_output_dir, epoch_outputs, output_name)        
-            save_output(config.linear_output_dir, score_outputs, output_name+'_scores')
-            print(f"[Epoch {epoch} / {config.linear_epochs}] Saved outputs to {config.linear_output_dir / (output_name+'.pkl')}")
-            print('='*100)
-            print()
-            
-            # Memory cleanup
-            del epoch_outputs, score_outputs, output, valid_output, train_loss
+                output_name = f"epoch{epoch+1:03d}"
+                save_output(config.linear_output_dir, epoch_outputs, output_name)        
+                save_output(config.linear_output_dir, score_outputs, output_name+'_scores')
+                print(f"[Epoch {epoch} / {config.linear_epochs}] Saved outputs to {config.linear_output_dir / (output_name+'.pkl')}")
+                print('='*100)
+                print()
+                # Memory cleanup
+                del epoch_outputs, score_outputs, output, valid_output, train_loss
+            else :
+                print(f"[Epoch {epoch} / {config.linear_epochs}] Valid AUROC did not improve from {best_valid_auroc:.4f}. Skipping checkpoint save.")
 
 if __name__ == '__main__':
     main()

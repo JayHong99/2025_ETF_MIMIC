@@ -44,6 +44,8 @@ class TrainConfig:
     e_lr: float = 0.01
     alpha: float = 0.5
     
+    fusion_method: str = 'Sum'  # 'Sum', 'WeightedFusion', 'AttnMaskedFusion', 'GraphFusion'
+    
     
     # ---- derived from YAML ----
     result_dir: Path = ""

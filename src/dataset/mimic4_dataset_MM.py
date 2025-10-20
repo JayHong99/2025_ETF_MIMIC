@@ -1,108 +1,93 @@
-import os
-from pydoc import text
-import pandas as pd
+import numpy as np
 import torch
 from torch.utils.data import Dataset
-from copy import copy
 
-# from dataset import tokenizer
-from src.dataset.tokenizer import MIMIC4Tokenizer
+from tqdm import tqdm
 from src.utils.utils import processed_data_path, read_txt, load_pickle
 
-from transformers import AutoTokenizer
 
 class MIMIC4Dataset_EMB(Dataset):
-    def __init__(self, split, task, seed, load_no_label=False, dev=False, return_raw=False):
-        if dev:
-            assert split == "train"
-        if load_no_label:
-            assert split == "train"
-        self.load_no_label = load_no_label
+    def __init__(self, config, split, return_raw=False):
+        self.config = config
+        self.modality = self.config.modality
+        self.task = self.config.task
+        self.target_days = self.config.target_days
         self.split = split
-        self.task = task
-        if self.task == "mortality":
-            hosp_adm_dict_path = os.path.join(processed_data_path, "mimic4/hosp_adm_dict_90days.pkl")
-            included_admission_ids_path = os.path.join(processed_data_path, f"mimic4/task:{task}_90days/{split}_admission_ids_seed_{seed}.txt")
-        elif self.task == "readmission" : 
-            hosp_adm_dict_path = os.path.join(processed_data_path, "mimic4/hosp_adm_dict_15days.pkl")
-            included_admission_ids_path = os.path.join(processed_data_path, f"mimic4/task:{task}_15days/{split}_admission_ids_seed_{seed}.txt")
-            
-            
-        self.all_hosp_adm_dict = load_pickle(hosp_adm_dict_path)
-        included_admission_ids = read_txt(included_admission_ids_path)
-        self.no_label_admission_ids = []
-        if load_no_label:
-            no_label_admission_ids = read_txt(
-                os.path.join(processed_data_path, f"mimic4/task:{task}/no_label_admission_ids.txt"))
-            self.no_label_admission_ids = no_label_admission_ids
-            included_admission_ids += no_label_admission_ids
-        self.included_admission_ids = included_admission_ids
-        if dev:
-            self.included_admission_ids = self.included_admission_ids[:10000]
-        self.return_raw = return_raw
-        self.tokenizer = MIMIC4Tokenizer()
+        self.seed = self.config.seed
 
+        tab = load_pickle(self.config.tabular_run_dir / 'outputs' / 'best_epoch.pkl')[split]['outputs']
+        lab = load_pickle(self.config.lab_run_dir / 'outputs' / 'best_epoch.pkl')[split]['outputs']
+        note = load_pickle(self.config.note_run_dir / 'outputs' / 'best_epoch.pkl')[split]['outputs']
+        
+        tab_keys = list(tab.keys())
+        lab_keys = list(lab.keys())
+        note_keys = list(note.keys())
+        self.included_admission_ids = np.array(
+            list(set(tab_keys) | set(lab_keys) | set(note_keys))
+        )
+        print(f"Loaded {len(self.included_admission_ids)} admission ids for {self.split} set.")
+        
+        # output value : label feature prob loss
+        
+        new_adm_dict = dict() # {key : [tab_feature, tab_flag, lab_feature, lab_flag, note_feature, note_flag, label]}
+        for admission_id in tqdm(self.included_admission_ids, desc=f"Loading {split} set embeddings", ncols=100, leave=True) :
+            tab_adm = tab.get(admission_id) # Raise error if not found. Tabular should always exist.
+            lab_adm = lab.get(admission_id, None)
+            note_adm = note.get(admission_id, None)
+            
+            tab_feature= tab_adm['features']
+            tab_flag = 1 if tab_adm is not None else 0
+            lab_feature = lab_adm['features'] if lab_adm is not None else np.zeros(self.config.projection_size)
+            lab_flag = 1 if lab_adm is not None else 0
+            note_feature = note_adm['features'] if note_adm is not None else np.zeros(self.config.projection_size)
+            note_flag = 1 if note_adm is not None else 0
+            label = tab_adm['labels']
+            
+            if tab_flag : 
+                tab_feature = tab_feature / np.linalg.norm(tab_feature)
+            if lab_flag : 
+                lab_feature = lab_feature / np.linalg.norm(lab_feature)
+            if note_flag : 
+                note_feature = note_feature / np.linalg.norm(note_feature)
+            
+            new_adm_dict[admission_id] = [
+                tab_feature, tab_flag,
+                lab_feature, lab_flag,
+                note_feature, note_flag,
+                label
+            ]
+        self.all_adm_dict = new_adm_dict
+        self.return_raw = return_raw
+        
+        # memory efficient
+        del tab, lab, note, tab_adm, lab_adm, note_adm, tab_keys, lab_keys, note_keys, new_adm_dict 
+    
     def __len__(self):
         return len(self.included_admission_ids)
     
-    def _tokenize(self) : 
-        for admission_id in self.included_admission_ids :
-            hosp_adm = self.all_hosp_adm_dict[admission_id]
-            discharge = hosp_adm.discharge
-            discharge_tokenized = self.text_tokenizer(discharge, return_tensors=None, padding=False, truncation=True, max_length=256)
-            hosp_adm.discharge_tokenized = discharge_tokenized
-            self.all_hosp_adm_dict[admission_id] = hosp_adm
-
-    def load_code(self, hosp_adm) : 
-        age = str(hosp_adm.age)
-        gender = hosp_adm.gender
-        ethnicity = hosp_adm.ethnicity
-        types = hosp_adm.trajectory[0]
-        codes = hosp_adm.trajectory[1]
-        if not self.return_raw :
-            age, gender, ethnicity, types, codes = self.tokenizer(
-                age, gender, ethnicity, types, codes
-            )
-        return age, gender, ethnicity, types, codes
-
+    def load_emb(self, admission_id) : 
+        adm_data = self.all_adm_dict[admission_id]
+        tab_feature = adm_data[0]
+        tab_flag = adm_data[1]
+        lab_feature = adm_data[2]
+        lab_flag = adm_data[3]
+        note_feature = adm_data[4]
+        note_flag = adm_data[5]
+        label = adm_data[6]
+        
+        return tab_feature, tab_flag, lab_feature, lab_flag, note_feature, note_flag, label
+    
     def __getitem__(self, index):
         admission_id = str(self.included_admission_ids[index])
+        tab_feature, tab_flag, lab_feature, lab_flag, note_feature, note_flag, label = self.load_emb(admission_id)
         
         return_dict = dict()
-        return_dict["id"] = admission_id
-        
-        hosp_adm = self.all_hosp_adm_dict[admission_id]
-        
-        tabular_flag, note_flag, lab_flag = True, False, False
-        age, gender, ethnicity, types, codes = self.load_code(hosp_adm)
-        return_dict["age"] = age
-        return_dict["gender"] = gender
-        return_dict["ethnicity"] = ethnicity
-        return_dict["types"] = types
-        return_dict["codes"] = codes
-        
-        if self.modality == 'note' : 
-            tabular_flag, note_flag, lab_flag = False, True, False
-            discharge = hosp_adm.discharge_tokenized
-            return_dict["discharge"] = discharge
-
-            
-        elif self.modality == 'lab' : 
-            tabular_flag, note_flag, lab_flag = False, False, True
-            labvectors = hosp_adm.labvectors
-            return_dict["labvectors"] = torch.FloatTensor(labvectors)
-            
-            
-        if self.modality != "note" : # for tabular and lab
-            return_dict["discharge"] = self.note_none_token
-        if self.modality != "lab" : # for tabular and note
-            return_dict["labvectors"] = torch.zeros(1, 114)
-
-        label = float(getattr(hosp_adm, self.task))
-        label = torch.tensor(label, dtype=torch.long)
-
-        return_dict["tabular_flag"] = tabular_flag
-        return_dict["note_flag"] = note_flag
-        return_dict["lab_flag"] = lab_flag
-        return_dict["label"] = label
+        return_dict["admission_id"] = torch.LongTensor([int(admission_id)])
+        return_dict["tab_feature"] = torch.FloatTensor(tab_feature)
+        return_dict["tab_flag"] = torch.LongTensor([tab_flag])
+        return_dict["lab_feature"] = torch.FloatTensor(lab_feature)
+        return_dict["lab_flag"] = torch.LongTensor([lab_flag])
+        return_dict["note_feature"] = torch.FloatTensor(note_feature)
+        return_dict["note_flag"] = torch.LongTensor([note_flag])
+        return_dict["label"] = torch.LongTensor([label])
         return return_dict

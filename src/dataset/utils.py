@@ -31,5 +31,21 @@ class MIMIC4Collator:
         out["note_flag"] = torch.tensor(out["note_flag"])
         out["labvectors"] = torch.nn.utils.rnn.pad_sequence(out["labvectors"], batch_first=True, padding_value=0)
         out["lab_flag"]   = torch.tensor(out["lab_flag"])
-        out["label"]      = torch.stack(out["label"])
+        out["label"]      = torch.tensor(out["label"])
+        return out
+
+class MIMIC4Collator_EMB:
+    def __init__(self) : 
+        return
+    
+    def __call__(self, batch) : 
+        out = {k : [b[k] for b in batch] for k in batch[0]}
+        out["admission_id"] = out["admission_id"]
+        out["tab_feature"] = torch.stack(out["tab_feature"])
+        out["tab_flag"]    = torch.tensor(out["tab_flag"])
+        out["lab_feature"] = torch.stack(out["lab_feature"])
+        out["lab_flag"]    = torch.tensor(out["lab_flag"])
+        out["note_feature"]= torch.stack(out["note_feature"])
+        out["note_flag"]   = torch.tensor(out["note_flag"])
+        out["label"]       = torch.stack(out["label"])
         return out
