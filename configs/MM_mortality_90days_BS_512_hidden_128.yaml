@@ -1,0 +1,44 @@
+modality: MultiModal
+task: mortality
+target_days: 90
+num_classes: 2
+
+batch_size: 512
+num_workers: 16
+
+## Model
+embedding_size: 128
+bert_type: prajjwal1/bert-tiny
+code_pretrained_embedding: True
+code_layers: 2
+code_heads: 2
+dropout: 0.25
+
+projection_size: 128
+
+linear_lr: 2e-4
+linear_weight_decay: 0
+linear_epochs: 400
+linear_temperature: 1.0
+
+rnn_layers: 2
+rnn_type: RNN
+rnn_bidirectional: True
+
+
+
+## Directory
+result_dir: Results
+exp_modality_name: Linear_${modality}/
+exp_name: Seed_${seed}/${task}_${target_days}days_proj_${projection_size}_batch_${batch_size}
+
+linear_run_dir: ${result_dir}/${exp_modality_name}/${exp_name}
+linear_model_dir: ${linear_run_dir}/models
+linear_output_dir: ${linear_run_dir}/outputs
+
+etf_dir: ${result_dir}/ETF
+etf_path: ${etf_dir}/ETF_${projection_size}_IN_2_OUT_Seed_${seed}.pt
+
+tabular_run_dir: ${result_dir}/Linear_tabular/${exp_name}
+lab_run_dir: ${result_dir}/Linear_lab/${exp_name}
+note_run_dir: ${result_dir}/Linear_note/${exp_name}
