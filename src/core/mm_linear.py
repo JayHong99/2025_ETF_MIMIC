@@ -73,7 +73,7 @@ class Linear_Trainer(nn.Module) :
             labels = labels.detach().cpu().numpy()
             
             for i, adm_id in enumerate(adm_ids) : 
-                output_collection[adm_id] = {
+                output_collection[adm_id.item()] = {
                     'labels': labels[i],
                     'probs': probs[i],
                     'loss': loss[i].item()

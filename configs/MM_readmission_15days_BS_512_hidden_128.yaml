@@ -1,6 +1,6 @@
 modality: MultiModal
-task: mortality
-target_days: 90
+task: readmission
+target_days: 15
 num_classes: 2
 
 batch_size: 512
