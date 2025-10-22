@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 
 class Linear_Trainer(nn.Module) : 
-    def __init__(self, config) : 
+    def __init__(self, config, logger) : 
         super(Linear_Trainer, self).__init__()
         self.linear_backbone = MMBackbone(config)
         
@@ -25,8 +25,10 @@ class Linear_Trainer(nn.Module) :
         )
         self.criterion_no_reduction = nn.CrossEntropyLoss(reduction='none')
         self.criterion = nn.CrossEntropyLoss()
+        
+        self.logger = logger
     
-    def train_epoch(self, train_loader) : 
+    def train_epoch(self, epoch, train_loader) : 
         self.train()
         self.linear_backbone.train()
 
@@ -46,6 +48,10 @@ class Linear_Trainer(nn.Module) :
             
             total_loss += loss.mean().item()
             n_batches += 1
+            metrics = {
+                'train/loss' : float(loss.mean().item())
+            }
+            self.logger.log_metrics(metrics, step=epoch*len(train_loader)+n_batches, epoch=epoch)
         # self.scheduler.step()
         return total_loss / n_batches
 

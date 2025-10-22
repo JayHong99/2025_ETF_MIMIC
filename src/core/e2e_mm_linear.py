@@ -9,9 +9,9 @@ from tqdm import tqdm
 
 
 class Linear_Trainer(nn.Module) : 
-    def __init__(self, config) : 
+    def __init__(self, config, tokenizer, logger) : 
         super(Linear_Trainer, self).__init__()
-        self.linear_backbone = MMBackbone(config)
+        self.linear_backbone = MMBackbone(config, tokenizer)
         
         self.temperature = float(config.linear_temperature)
         self.device = "cuda"
@@ -25,8 +25,10 @@ class Linear_Trainer(nn.Module) :
         )
         self.criterion_no_reduction = nn.CrossEntropyLoss(reduction='none')
         self.criterion = nn.CrossEntropyLoss()
+        
+        self.logger = logger # commet logger
     
-    def train_epoch(self, train_loader) : 
+    def train_epoch(self, epoch, train_loader) : 
         self.train()
         self.linear_backbone.train()
 
@@ -46,6 +48,10 @@ class Linear_Trainer(nn.Module) :
             
             total_loss += loss.mean().item()
             n_batches += 1
+            metrics = {
+                'train/loss' : float(loss.mean().item())
+            }
+            self.logger.log_metrics(metrics, step=epoch*len(train_loader)+n_batches, epoch=epoch)
         # self.scheduler.step()
         return total_loss / n_batches
 
@@ -61,7 +67,7 @@ class Linear_Trainer(nn.Module) :
         total_probs, total_labels = [], []
         
         for batch in val_loader : 
-            adm_ids = batch['admission_id']            
+            adm_ids = batch['id']            
             
             logits = self.linear_backbone(**batch)
             probs = logits / self.temperature
@@ -73,7 +79,7 @@ class Linear_Trainer(nn.Module) :
             labels = labels.detach().cpu().numpy()
             
             for i, adm_id in enumerate(adm_ids) : 
-                output_collection[adm_id.item()] = {
+                output_collection[adm_id] = {
                     'labels': labels[i],
                     'probs': probs[i],
                     'loss': loss[i].item()

@@ -54,7 +54,7 @@ class LinearBackbone(nn.Module) :
             # label,
             **kwargs
     ):
-        if self.modality == 'tabular' : 
+        if self.modality == 'tabular' :             
             embedding =  self.encoder(codes, types, age, gender, ethnicity)
         elif self.modality == 'note' :
             embedding = self.encoder(discharge)

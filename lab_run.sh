@@ -1,6 +1,6 @@
 #!/bin/bash
 source ../robust_venv/bin/activate
-device=0
+device=1
 
 # cfg_path="configs/lab_mortality_90days_BS_512_hidden_128.yaml"
 

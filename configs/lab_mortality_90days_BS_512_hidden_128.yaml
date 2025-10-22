@@ -18,7 +18,7 @@ projection_size: 128
 
 linear_lr: 2e-4
 linear_weight_decay: 0
-linear_epochs: 400
+linear_epochs: 100
 linear_temperature: 1.0
 
 rnn_layers: 2

@@ -6,8 +6,7 @@ from copy import copy
 from torch.utils.data import DataLoader
 import torch
 
-
-from src.utils.utils import setup_seed, save_checkpoint, save_output
+from src.utils.utils import setup_seed, save_checkpoint, save_output, load_logger
 from src.utils.config import load_cfg
 from src.dataset.mimic4_dataset import MIMIC4Dataset
 from src.dataset.utils import MIMIC4Collator
@@ -33,6 +32,8 @@ def main() :
         print(f"Output already exists in {config.linear_output_dir}, skipping...")
         return
     
+    logger = load_logger(config)
+    experiment = logger.experiment
     all_hosp_adm_dict = load_pickle(processed_data_path / f"mimic4/hosp_adm_dict_{config.target_days}days.pkl")
         
 
@@ -78,11 +79,9 @@ def main() :
     # memory efficient
     
     tokenizer = train_set.tokenizer
-    model = Linear_Trainer(config, tokenizer).to('cuda')
+    model = Linear_Trainer(config, tokenizer, experiment).to('cuda')
     del all_hosp_adm_dict, mimic4_collate_fn, valid_set, train_set, test_set
     # 
-    
-        
     
     if config.do_train : # do_train is False == train    
         if (config.linear_output_dir / 'best_epoch.pkl').exists() :
@@ -96,44 +95,68 @@ def main() :
             ckpt = torch.load(model_dirs[-1], map_location='cpu')
             model.load_state_dict(ckpt)
             resume_epoch = int(model_dirs[-1].stem.split('_')[1].replace('epoch', ''))
+            
+            score = load_pickle(config.linear_output_dir / f'epoch{resume_epoch-1:03d}_scores.pkl')
+            best_valid_auroc = score['valid']['auroc']
             print(f"Resume from epoch {resume_epoch} with : {model_dirs[-1]}")
             del ckpt, model_dirs
         else :
             resume_epoch = 0
+            best_valid_auroc = 0.0
             print("Training from scratch...")
+
+        print(f"Starting training from epoch {resume_epoch}")        
+        experiment.log_parameters(OmegaConf.to_container(config, resolve=True))
         
         for epoch in range(resume_epoch, config.linear_epochs) :
             epoch_outputs = {}
             score_outputs = {}
-            train_loss = model.train_epoch(train_loader)
+            train_loss = model.train_epoch(epoch, train_loader)
             valid_output = model.evaluate(valid_loader)
-            model_save_name = f"linear_epoch{epoch+1:03d}_train{train_loss:.4f}_valid{valid_output['loss']:.4f}"
-            save_checkpoint(config.linear_model_dir, model, model_save_name)
             
-            for mode, loader in zip(['train', 'valid', 'test'], [train_loader, valid_loader, test_loader]) : 
-                if mode == 'valid' : 
-                    output = valid_output
-                else : 
-                    output = model.evaluate(loader)
-                epoch_outputs[mode] = output
-                print(f"[Modality : {config.modality}] [Epoch {epoch} / {config.linear_epochs}] {mode} AUROC : {output['auroc']:.4f} | {mode} AUPRC : {output['auprc']:.4f}")
-                
-                score_outputs[mode] = {
-                    'accuracy' : output['accuracy'],
-                    'auroc' : output['auroc'],
-                    'auprc' : output['auprc'],
-                    'loss' : output['loss']
-                }
+            if valid_output['auroc'] > best_valid_auroc :
+                best_valid_auroc = valid_output['auroc']
+                model_save_name = f"linear_epoch{epoch+1:03d}_train{train_loss:.4f}_valid{valid_output['loss']:.4f}"
+                save_checkpoint(config.linear_model_dir, model, model_save_name)
+                for mode, loader in zip(['train', 'valid', 'test'], [train_loader, valid_loader, test_loader]) : 
+                    if mode == 'valid' : 
+                        output = valid_output
+                    else : 
+                        output = model.evaluate(loader)
+                    epoch_outputs[mode] = output
+                    print(f"[Modality : {config.modality}] [Epoch {epoch} / {config.linear_epochs}] {mode} AUROC : {output['auroc']:.4f} | {mode} AUPRC : {output['auprc']:.4f}")
+                    
+                    score_outputs[mode] = {
+                        'accuracy' : output['accuracy'],
+                        'auroc' : output['auroc'],
+                        'auprc' : output['auprc'],
+                        'loss' : output['loss']
+                    }
+                    
+                    experiment.log_metrics({
+                        f'{mode}/accuracy' : output['accuracy'],
+                        f'{mode}/auroc' : output['auroc'],
+                        f'{mode}/auprc' : output['auprc'],
+                        f'{mode}/loss' : output['loss']
+                    }, step=epoch+1, epoch=epoch)
 
-            output_name = f"epoch{epoch+1:03d}"
-            save_output(config.linear_output_dir, epoch_outputs, output_name)        
-            save_output(config.linear_output_dir, score_outputs, output_name+'_scores')
-            print(f"[Epoch {epoch} / {config.linear_epochs}] Saved outputs to {config.linear_output_dir / (output_name+'.pkl')}")
-            print('='*100)
-            print()
-            
-            # Memory cleanup
-            del epoch_outputs, score_outputs, output, valid_output, train_loss
+                output_name = f"epoch{epoch+1:03d}"
+                save_output(config.linear_output_dir, epoch_outputs, output_name)        
+                save_output(config.linear_output_dir, score_outputs, output_name+'_scores')
+                print(f"[Epoch {epoch} / {config.linear_epochs}] Saved outputs to {config.linear_output_dir / (output_name+'.pkl')}")
+                print('='*100)
+                print()
+                
+                # Memory cleanup
+                del epoch_outputs, score_outputs, output, valid_output, train_loss
+            else :
+                print(f"[Epoch {epoch} / {config.linear_epochs}] Valid AUROC did not improve from {best_valid_auroc:.4f}. Skipping checkpoint save.")
+                experiment.log_metrics({
+                    f'valid/accuracy' : valid_output['accuracy'],
+                    f'valid/auroc' : valid_output['auroc'],
+                    f'valid/auprc' : valid_output['auprc'],
+                    f'valid/loss' : valid_output['loss']
+                }, step=epoch+1, epoch=epoch)
 
 if __name__ == '__main__':
     main()

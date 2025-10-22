@@ -7,11 +7,11 @@ from torch.utils.data import DataLoader
 import torch
 
 
-from src.utils.utils import setup_seed, save_checkpoint, save_output
+from src.utils.utils import setup_seed, save_checkpoint, save_output, load_logger
 from src.utils.config import load_cfg
 from src.dataset.mimic4_dataset import MIMIC4DatasetMM
 from src.dataset.utils import MIMIC4Collator
-from src.core.mm_linear import Linear_Trainer
+from src.core.e2e_mm_linear import Linear_Trainer
 from src.utils.utils import processed_data_path, read_txt, load_pickle
 
 parser = argparse.ArgumentParser()
@@ -28,15 +28,18 @@ def main() :
     print(config)
     setup_seed(config.seed)    
     os.environ["CUDA_VISIBLE_DEVICES"] = str(config.device)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     
     if config.linear_output_dir.joinpath('best_epoch.pkl').exists() and config.do_train :
         print(f"Output already exists in {config.linear_output_dir}, skipping...")
         return
 
+    logger = load_logger(config)
+    experiment = logger.experiment
     all_hosp_adm_dict = load_pickle(processed_data_path / f"mimic4/hosp_adm_dict_{config.target_days}days.pkl")
 
     train_set = MIMIC4DatasetMM(config, split='train', all_hosp_adm_dict=all_hosp_adm_dict  )
-    valid_set = MIMIC4DatasetMM(config, split='valid', all_hosp_adm_dict=all_hosp_adm_dict  )
+    valid_set = MIMIC4DatasetMM(config, split='val', all_hosp_adm_dict=all_hosp_adm_dict  )
     test_set = MIMIC4DatasetMM(config, split='test', all_hosp_adm_dict=all_hosp_adm_dict  )    
     mimic4_collate_fn = MIMIC4Collator(config)
 
@@ -76,8 +79,8 @@ def main() :
     
     # memory efficient
     
-    # tokenizer = train_set.tokenizer
-    model = Linear_Trainer(config).to('cuda')
+    tokenizer = train_set.tokenizer
+    model = Linear_Trainer(config, tokenizer, experiment).to('cuda')
     del mimic4_collate_fn, valid_set, train_set, test_set
     
         
@@ -94,17 +97,23 @@ def main() :
             ckpt = torch.load(model_dirs[-1], map_location='cpu')
             model.load_state_dict(ckpt)
             resume_epoch = int(model_dirs[-1].stem.split('_')[1].replace('epoch', ''))
+            
+            score = load_pickle(config.linear_output_dir / f'epoch{resume_epoch-1:03d}_scores.pkl')
+            best_valid_auroc = score['valid']['auroc']
             print(f"Resume from epoch {resume_epoch} with : {model_dirs[-1]}")
             del ckpt, model_dirs
         else :
             resume_epoch = 0
+            best_valid_auroc = 0.0
             print("Training from scratch...")
+
+        print(f"Starting training from epoch {resume_epoch}")        
+        experiment.log_parameters(OmegaConf.to_container(config, resolve=True))
         
-        best_valid_auroc = 0.0
         for epoch in range(resume_epoch, config.linear_epochs) :
             epoch_outputs = {}
             score_outputs = {}
-            train_loss = model.train_epoch(train_loader)
+            train_loss = model.train_epoch(epoch, train_loader)
             valid_output = model.evaluate(valid_loader)
             
             if valid_output['auroc'] > best_valid_auroc :
@@ -125,6 +134,12 @@ def main() :
                         'auprc' : output['auprc'],
                         'loss' : output['loss']
                     }
+                    experiment.log_metrics({
+                        f'{mode}/accuracy' : output['accuracy'],
+                        f'{mode}/auroc' : output['auroc'],
+                        f'{mode}/auprc' : output['auprc'],
+                        f'{mode}/loss' : output['loss']
+                    }, step=epoch+1, epoch=epoch)
 
                 output_name = f"epoch{epoch+1:03d}"
                 save_output(config.linear_output_dir, epoch_outputs, output_name)        
@@ -136,6 +151,12 @@ def main() :
                 del epoch_outputs, score_outputs, output, valid_output, train_loss
             else :
                 print(f"[Epoch {epoch} / {config.linear_epochs}] Valid AUROC did not improve from {best_valid_auroc:.4f}. Skipping checkpoint save.")
+                experiment.log_metrics({
+                    f'valid/accuracy' : valid_output['accuracy'],
+                    f'valid/auroc' : valid_output['auroc'],
+                    f'valid/auprc' : valid_output['auprc'],
+                    f'valid/loss' : valid_output['loss']
+                }, step=epoch+1, epoch=epoch)
 
 if __name__ == '__main__':
     main()

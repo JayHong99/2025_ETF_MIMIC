@@ -10,9 +10,11 @@ from tqdm import tqdm
 
 class Linear_Trainer(nn.Module) : 
     # SimCLR
-    def __init__(self, config, tokenizer) : 
+    def __init__(self, config, tokenizer, logger) : 
         super(Linear_Trainer, self).__init__()
         self.linear_backbone = LinearBackbone(config, tokenizer)
+        self.tokenizer = tokenizer
+        self.logger = logger
         
         if config.etf_path.exists() :         
             proto = torch.load(config.etf_path)
@@ -26,22 +28,15 @@ class Linear_Trainer(nn.Module) :
         self.temperature = float(config.linear_temperature)
         self.device = "cuda"
         
-        self.tokenizer = tokenizer
-        
         self.optimizer = torch.optim.Adam(
             self.parameters(),
             lr = config.linear_lr,
             weight_decay = config.linear_weight_decay
         )
-        # self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        #     self.optimizer,
-        #     T_max = config.linear_epochs,
-        #     eta_min = config.linear_lr * 0.1
-        # )
         self.criterion_no_reduction = nn.CrossEntropyLoss(reduction='none')
         self.criterion = nn.CrossEntropyLoss()
     
-    def train_epoch(self, train_loader) : 
+    def train_epoch(self, epoch, train_loader) : 
         self.train()
         self.linear_backbone.train()
 
@@ -65,6 +60,11 @@ class Linear_Trainer(nn.Module) :
             
             total_loss += loss.mean().item()
             n_batches += 1
+            
+            metrics = {
+                'train/loss' : float(loss.mean().item())
+            }
+            self.logger.log_metrics(metrics, step=epoch*len(train_loader)+n_batches, epoch=epoch)
         # self.scheduler.step()
         return total_loss / n_batches
 

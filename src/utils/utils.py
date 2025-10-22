@@ -6,6 +6,9 @@ import torch.backends.cudnn as cudnn
 import pickle
 import os
 
+from omegaconf import OmegaConf
+
+
 remote_root = Path("/home/data/2025_MIMICIV_processed")
 processed_data_path = remote_root
 
@@ -62,3 +65,22 @@ def save_output(output_dir, output, name):
     with open(path, "wb") as f:
         pickle.dump(output, f)
     return
+
+
+def load_logger(args) : 
+    from pytorch_lightning.loggers import CometLogger
+    comet_key_path = Path('.') / '.comet_key'
+    comet_key = OmegaConf.load(comet_key_path)
+    api_key = comet_key['api_key']
+    workspace = comet_key['workspace']
+    project_name = "MIMIC_Multimodal_ETF"
+    exp_name = args.exp_name if args.modality != "MultiModal" else f"{args.exp_modality_name.split('/')[-1]}/{args.exp_name}"
+    
+    comet_logger = CometLogger(
+        api_key=api_key,
+        workspace=workspace,
+        project_name=project_name,
+        experiment_name=exp_name,
+        save_dir=args.linear_run_dir
+    )
+    return comet_logger
